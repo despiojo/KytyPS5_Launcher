@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "KytyPS5Launcher (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "KytyPS5Launcher (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

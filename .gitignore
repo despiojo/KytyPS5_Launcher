@@ -1,0 +1,22 @@
+# Build output
+**/bin/
+**/obj/
+**/.vs/
+**/artifacts/
+
+# Packages and signing material
+*.msix
+*.msixupload
+*.appx
+*.appxupload
+*.msixbundle
+*.appxbundle
+*.pfx
+*.p12
+KytyPS5Launcher-devcert.cer
+
+# Local tooling
+.vs/
+.idea/
+*.user
+*.suo
