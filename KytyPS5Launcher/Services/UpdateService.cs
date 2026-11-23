@@ -9,33 +9,46 @@ namespace KytyPS5Launcher.Services;
 public sealed record ReleaseInfo(string Tag, Uri DownloadUrl, long Size, string Sha256);
 public sealed record UpdateProgress(string Message, double? Percent = null);
 
-public sealed class UpdateService
+public sealed class UpdateService : IDisposable
 {
     private const long MaximumDownload = 512L * 1024 * 1024;
     private const long MaximumExtracted = 2L * 1024 * 1024 * 1024;
     private static readonly HttpClient Client = CreateClient();
-    private readonly string _versions;
-    private readonly string _statePath;
+    private readonly string _settingsRoot;
+    private string _versions => Path.Combine(Root, "versions");
+    private string _statePath => Path.Combine(Root, "current.json");
     private FileStream? _lock;
+    private FileStream? _installationLock;
     private string? _currentDirectory;
 
-    public string Root { get; }
+    public string Root { get; private set; }
     public string? InstalledVersion { get; private set; }
 
     public UpdateService() : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KytyPS5Launcher")) { }
 
     public UpdateService(string root)
     {
-        Root = Path.GetFullPath(root);
-        _versions = Path.Combine(Root, "versions");
-        _statePath = Path.Combine(Root, "current.json");
+        _settingsRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        Root = _settingsRoot;
     }
 
     public void Initialize()
     {
-        Directory.CreateDirectory(_versions);
-        try { _lock = new FileStream(Path.Combine(Root, "launcher.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        Directory.CreateDirectory(_settingsRoot);
+        try { _lock = new FileStream(Path.Combine(_settingsRoot, "launcher.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException ex) { throw new IOException("Another launcher instance is already running, or its lock cannot be opened.", ex); }
+        string settingsPath = Path.Combine(_settingsRoot, "location.json");
+        if (File.Exists(settingsPath))
+        {
+            using JsonDocument settings = JsonDocument.Parse(File.ReadAllText(settingsPath));
+            string path = settings.RootElement.GetProperty("root").GetString() ?? "";
+            if (!Path.IsPathFullyQualified(path)) throw new InvalidDataException("The saved installation folder is invalid.");
+            Root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        }
+        if (!Directory.Exists(Root)) throw new DirectoryNotFoundException($"The installation folder is unavailable: {Root}");
+        if (!Root.Equals(_settingsRoot, StringComparison.OrdinalIgnoreCase))
+            _installationLock = OpenInstallationLock(Root);
+        Directory.CreateDirectory(_versions);
         if (!File.Exists(_statePath)) return;
         using JsonDocument state = JsonDocument.Parse(File.ReadAllText(_statePath));
         string id = state.RootElement.GetProperty("directory").GetString() ?? "";
@@ -47,6 +60,88 @@ public sealed class UpdateService
             throw new InvalidDataException("The installed launcher is missing. Restore the installation record or files before continuing.");
         _currentDirectory = directory;
         InstalledVersion = tag;
+    }
+
+    public async Task ChangeLocationAsync(string selectedPath)
+    {
+        EnsureInitialized();
+        if (!Path.IsPathFullyQualified(selectedPath)) throw new ArgumentException("Select an absolute folder path.");
+        string destination = Path.TrimEndingDirectorySeparator(Path.GetFullPath(selectedPath));
+        if (destination.Equals(Root, StringComparison.OrdinalIgnoreCase)) return;
+        if (!Directory.Exists(destination)) throw new DirectoryNotFoundException("The selected folder does not exist.");
+        if (IsWithin(destination, Root) || IsWithin(Root, destination) ||
+            IsWithin(destination, _settingsRoot) || IsWithin(_settingsRoot, destination))
+            throw new InvalidOperationException("Choose a folder outside the current installation and launcher settings folders.");
+        RejectLinkedDirectories(Root);
+        RejectLinkedDirectories(destination);
+        if (Directory.EnumerateFileSystemEntries(destination).Any())
+            throw new InvalidOperationException("Choose an empty folder. Existing files will not be overwritten.");
+        EnsureNotRunning();
+
+        await Task.Run(() =>
+        {
+            FileStream? destinationLock = null;
+            string settingsTemp = Path.Combine(_settingsRoot, Guid.NewGuid().ToString("N") + ".json");
+            try
+            {
+                destinationLock = OpenInstallationLock(destination);
+                if (Directory.EnumerateFileSystemEntries(destination).Any(path =>
+                    !Path.GetFileName(path).Equals("launcher.lock", StringComparison.OrdinalIgnoreCase)))
+                    throw new IOException("The selected folder is no longer empty.");
+                string destinationVersions = Path.Combine(destination, "versions");
+                Directory.CreateDirectory(destinationVersions);
+                CopyDirectory(_versions, destinationVersions);
+                if (File.Exists(_statePath))
+                    File.Copy(_statePath, Path.Combine(destination, "current.json"));
+                EnsureNotRunning();
+                using (var file = new FileStream(settingsTemp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    JsonSerializer.Serialize(file, new LocationState(destination));
+                    file.Flush(true);
+                }
+                File.Move(settingsTemp, Path.Combine(_settingsRoot, "location.json"), true);
+                _installationLock?.Dispose();
+                _installationLock = destinationLock;
+                destinationLock = null;
+                Root = destination;
+                if (_currentDirectory is not null)
+                    _currentDirectory = Path.Combine(_versions, Path.GetFileName(_currentDirectory));
+            }
+            catch (Exception ex)
+            {
+                throw new IOException("Could not change the installation folder. The original installation is unchanged; the selected folder may contain partial copies. " + ex.Message, ex);
+            }
+            finally
+            {
+                destinationLock?.Dispose();
+                if (File.Exists(settingsTemp)) File.Delete(settingsTemp);
+            }
+        });
+    }
+
+    public void Dispose()
+    {
+        _installationLock?.Dispose();
+        _lock?.Dispose();
+        _installationLock = null;
+        _lock = null;
+    }
+
+    private static FileStream OpenInstallationLock(string root)
+    {
+        try { return new FileStream(Path.Combine(root, "launcher.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        catch (IOException ex) { throw new IOException("The installation folder is already in use or cannot be opened.", ex); }
+    }
+
+    private static bool IsWithin(string path, string parent) =>
+        path.Equals(parent, StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith(Path.EndsInDirectorySeparator(parent) ? parent : parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    private static void RejectLinkedDirectories(string path)
+    {
+        for (DirectoryInfo? directory = new(path); directory is not null; directory = directory.Parent)
+            if ((directory.Attributes & FileAttributes.ReparsePoint) != 0)
+                throw new IOException($"Folders containing links or junctions are not supported: {directory.FullName}");
     }
 
     public async Task<ReleaseInfo> CheckAsync()
@@ -250,4 +345,5 @@ public sealed class UpdateService
     }
 
     private sealed record InstallationState(string directory, string tag);
+    private sealed record LocationState(string root);
 }

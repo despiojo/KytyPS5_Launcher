@@ -1,6 +1,7 @@
 using KytyPS5Launcher.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.Windows.Storage.Pickers;
 
 namespace KytyPS5Launcher;
 
@@ -24,10 +25,37 @@ public sealed partial class MainPage : Page
         InstalledText.Text = _service.InstalledVersion ?? "Not installed";
         LatestText.Text = _latest?.Tag ?? "Not checked";
         LocationText.Text = $"Installation folder: {_service.Root}";
+        ChangeFolderButton.IsEnabled = !_busy && _startupError is null;
         CheckButton.IsEnabled = !_busy && _startupError is null;
         InstallButton.IsEnabled = !_busy && _startupError is null && _latest is not null && _latest.Tag != _service.InstalledVersion;
         InstallButton.Content = _service.InstalledVersion is null ? "Install" : "Update";
         LaunchButton.IsEnabled = !_busy && _startupError is null && _service.InstalledVersion is not null;
+    }
+
+    private async void ChangeFolder_Click(object sender, RoutedEventArgs e)
+    {
+        _busy = true;
+        Notice.IsOpen = false;
+        Refresh();
+        try
+        {
+            var picker = new FolderPicker(((FrameworkElement)sender).XamlRoot.ContentIslandEnvironment.AppWindowId)
+            {
+                Title = "Choose an empty installation folder",
+                CommitButtonText = "Select folder"
+            };
+            PickFolderResult? selected = await picker.PickSingleFolderAsync();
+            if (selected is null) return;
+            Progress.Visibility = Visibility.Visible;
+            Progress.IsIndeterminate = true;
+            ProgressText.Text = "Copying installation to the selected folder...";
+            await _service.ChangeLocationAsync(selected.Path);
+            ProgressText.Text = _service.InstalledVersion is null
+                ? "Installation folder selected."
+                : "Installation copied. The original remains in its previous folder.";
+        }
+        catch (Exception ex) { ProgressText.Text = "Could not change the installation folder."; ShowError(ex); }
+        finally { _busy = false; Progress.Visibility = Visibility.Collapsed; Refresh(); }
     }
 
     private async void Check_Click(object sender, RoutedEventArgs e)

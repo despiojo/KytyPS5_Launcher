@@ -22,6 +22,7 @@
                         <TextBlock x:Name="LatestText" Grid.Row="1" Grid.Column="1" TextWrapping="Wrap" />
                     </Grid>
                     <TextBlock x:Name="LocationText" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" />
+                    <Button x:Name="ChangeFolderButton" Content="Change folder" Click="ChangeFolder_Click" AutomationProperties.AutomationId="ChangeFolderButton" />
                 </StackPanel>
             </Border>
             <StackPanel Orientation="Horizontal" Spacing="8">
