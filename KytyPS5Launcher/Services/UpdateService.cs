@@ -7,6 +7,7 @@ using System.Text.Json;
 namespace KytyPS5Launcher.Services;
 
 public sealed record ReleaseInfo(string Tag, Uri DownloadUrl, long Size, string Sha256);
+public sealed record ReleaseOption(string Tag, ReleaseInfo? Release, string? UnavailableReason);
 public sealed record UpdateProgress(string Message, double? Percent = null);
 
 public sealed class UpdateService : IDisposable
@@ -144,18 +145,30 @@ public sealed class UpdateService : IDisposable
                 throw new IOException($"Folders containing links or junctions are not supported: {directory.FullName}");
     }
 
-    public async Task<ReleaseInfo> CheckAsync()
+    public async Task<IReadOnlyList<ReleaseOption>> GetReleasesAsync(int page)
     {
-        using HttpResponseMessage response = await Client.GetAsync("https://api.github.com/repos/KytyPS5/KytyPS5/releases/latest");
+        if (page < 1) throw new ArgumentOutOfRangeException(nameof(page));
+        using HttpResponseMessage response = await Client.GetAsync($"https://api.github.com/repos/KytyPS5/KytyPS5/releases?per_page=100&page={page}");
         response.EnsureSuccessStatusCode();
         using Stream stream = await response.Content.ReadAsStreamAsync();
         using JsonDocument json = await JsonDocument.ParseAsync(stream);
-        string tag = json.RootElement.GetProperty("tag_name").GetString() ?? "";
-        if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException("The latest release has no tag.");
-        var matches = json.RootElement.GetProperty("assets").EnumerateArray()
+        return ParseReleases(json.RootElement);
+    }
+
+    internal static IReadOnlyList<ReleaseOption> ParseReleases(JsonElement releases)
+    {
+        return releases.EnumerateArray().Select(ParseRelease).ToArray();
+    }
+
+    private static ReleaseOption ParseRelease(JsonElement release)
+    {
+        string tag = release.GetProperty("tag_name").GetString() ?? "";
+        if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException("A release has no tag.");
+        var matches = release.GetProperty("assets").EnumerateArray()
             .Where(a => (a.GetProperty("name").GetString() ?? "").EndsWith("-Windows-x64.zip", StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        if (matches.Length != 1) throw new InvalidDataException("The latest release does not have exactly one Windows x64 ZIP asset.");
+        if (matches.Length == 0) return new(tag, null, "No Windows x64 ZIP is available.");
+        if (matches.Length != 1) return new(tag, null, "Multiple Windows x64 ZIP assets were found.");
         JsonElement asset = matches[0];
         string url = asset.GetProperty("browser_download_url").GetString() ?? "";
         string digest = asset.TryGetProperty("digest", out var d) ? d.GetString() ?? "" : "";
@@ -163,11 +176,11 @@ public sealed class UpdateService : IDisposable
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) || uri.Scheme != Uri.UriSchemeHttps ||
             !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase) ||
             !uri.AbsolutePath.StartsWith("/KytyPS5/KytyPS5/releases/download/", StringComparison.Ordinal))
-            throw new InvalidDataException("The release asset URL is not a trusted KytyPS5 GitHub download.");
+            return new(tag, null, "The Windows asset URL is not a trusted KytyPS5 GitHub download.");
         if (size <= 0 || size > MaximumDownload || !digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) ||
             digest.Length != 71 || !digest[7..].All(Uri.IsHexDigit))
-            throw new InvalidDataException("The release asset has an invalid size or is missing a SHA-256 digest.");
-        return new ReleaseInfo(tag, uri, size, digest[7..]);
+            return new(tag, null, "The Windows asset has an invalid size or is missing a SHA-256 digest.");
+        return new(tag, new ReleaseInfo(tag, uri, size, digest[7..]), null);
     }
 
     public async Task InstallAsync(ReleaseInfo release, IProgress<UpdateProgress> progress)

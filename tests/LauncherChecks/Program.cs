@@ -3,11 +3,57 @@ using System.Diagnostics;
 using KytyPS5Launcher.Services;
 
 string testRoot = Path.Combine(Path.GetTempPath(), "KytyLocationTests-" + Guid.NewGuid().ToString("N"));
+string digest = "sha256:" + new string('a', 64);
+var validAsset = new { name = "older-Windows-x64.zip", size = 123L, digest, browser_download_url = "https://github.com/KytyPS5/KytyPS5/releases/download/older/older-Windows-x64.zip" };
+var missingDigest = new { name = "missing-Windows-x64.zip", size = 123L, digest = (string?)null, browser_download_url = "https://github.com/KytyPS5/KytyPS5/releases/download/missing/missing-Windows-x64.zip" };
+var badUrl = new { name = "bad-Windows-x64.zip", size = 123L, digest, browser_download_url = "https://example.com/bad-Windows-x64.zip" };
+using (JsonDocument releases = JsonDocument.Parse(JsonSerializer.Serialize(new object[]
+{
+    new { tag_name = "newest", assets = Array.Empty<object>() },
+    new { tag_name = "older", assets = new[] { validAsset } },
+    new { tag_name = "missing", assets = new[] { missingDigest } },
+    new { tag_name = "bad", assets = new[] { badUrl } },
+    new { tag_name = "duplicate", assets = new[] { validAsset, validAsset } }
+})))
+{
+    var options = UpdateService.ParseReleases(releases.RootElement);
+    Require(options.Count == 5 && options[0].Release is null && options[0].UnavailableReason!.Contains("No Windows"), "Missing Windows asset was not identified.");
+    Require(options[1].Release?.Tag == "older" && options[1].Release?.Sha256 == new string('a', 64), "Usable older release was not selectable.");
+    Require(options[2].Release is null && options[2].UnavailableReason!.Contains("SHA-256"), "Missing digest was accepted.");
+    Require(options[3].Release is null && options[3].UnavailableReason!.Contains("trusted"), "Untrusted download URL was accepted.");
+    Require(options[4].Release is null && options[4].UnavailableReason!.Contains("Multiple"), "Ambiguous Windows assets were accepted.");
+}
 string settingsRoot = Path.Combine(testRoot, "settings");
 string destination = Path.Combine(testRoot, "destination");
 Directory.CreateDirectory(destination);
 try
 {
+    if (args.Length > 0)
+    {
+        using var liveService = new UpdateService(Path.Combine(testRoot, "live"));
+        liveService.Initialize();
+        var releases = await liveService.GetReleasesAsync(1);
+        int selectedIndex = -1;
+        for (int i = 0; i < releases.Count; i++)
+            if (releases[i].Tag == args[0]) { selectedIndex = i; break; }
+        Require(selectedIndex >= 0 && releases[selectedIndex].Release is not null, "Requested live release is not available.");
+        var release = releases[selectedIndex].Release!;
+        await liveService.InstallAsync(release, new Progress<UpdateProgress>());
+        Require(liveService.InstalledVersion == release.Tag, "Selected release was not installed.");
+        using var current = JsonDocument.Parse(File.ReadAllText(Path.Combine(liveService.Root, "current.json")));
+        string versionDirectory = Path.Combine(liveService.Root, "versions", current.RootElement.GetProperty("directory").GetString()!);
+        File.WriteAllText(Path.Combine(versionDirectory, "Kyty.ini"), "preserved settings");
+        ReleaseInfo? older = releases.Skip(selectedIndex + 1).Select(option => option.Release).FirstOrDefault(option => option is not null);
+        Require(older is not null, "No older usable live release was found.");
+        await liveService.InstallAsync(older!, new Progress<UpdateProgress>());
+        using var updated = JsonDocument.Parse(File.ReadAllText(Path.Combine(liveService.Root, "current.json")));
+        string updatedDirectory = Path.Combine(liveService.Root, "versions", updated.RootElement.GetProperty("directory").GetString()!);
+        Require(liveService.InstalledVersion == older!.Tag, "Older selected release was not applied.");
+        Require(File.ReadAllText(Path.Combine(updatedDirectory, "Kyty.ini")) == "preserved settings", "Applying an older release lost settings.");
+        Require(File.Exists(Path.Combine(versionDirectory, "kyty_launcher.exe")), "Applying an older release removed the prior installation.");
+        Console.WriteLine($"Live install and downgrade passed: {release.Tag} -> {older.Tag}");
+    }
+
     using (var service = new UpdateService(settingsRoot))
     {
         service.Initialize();

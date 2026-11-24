@@ -1,6 +1,6 @@
 # KytyPS5 Launcher
 
-A packaged Windows x64 WinUI 3 application that checks the latest KytyPS5 release and installs it on request.
+A packaged Windows x64 WinUI 3 application that checks KytyPS5 releases and installs a selected release on request.
 
 ## Development
 
@@ -13,7 +13,7 @@ A packaged Windows x64 WinUI 3 application that checks the latest KytyPS5 releas
 
 ## Using the launcher
 
-Select **Check for updates**, then **Install** or **Update**. The download is checked against the release's published SHA-256 digest before extraction. If the release has no Windows x64 ZIP or SHA-256 digest, installation is refused. Select **Launch KytyPS5** to start its graphical launcher. Close KytyPS5, its games, and its updater before installing an update. Disable KytyPS5's own automatic updater to avoid changes outside this launcher.
+Select **Check for updates**, choose a release, then select **Install** or **Apply release**. The newest usable release is selected initially; **Load older releases** retrieves more. Releases without a usable Windows x64 ZIP are marked unavailable, and selecting one shows why. You can apply an older release; doing so replaces the active version with that release while preserving the previous version and settings. The download is checked against the release's published SHA-256 digest before extraction. Select **Launch KytyPS5** to start its graphical launcher. Close KytyPS5, its games, and its updater before installing an update. Disable KytyPS5's own automatic updater to avoid changes outside this launcher.
 
 The default installation folder is `%LOCALAPPDATA%\KytyPS5Launcher`. Select **Change folder** to choose an empty folder before or after installation. Close KytyPS5 and its games first; changing folders copies all managed versions and their data, leaves the original intact, and requires enough free space for the copy. If copying fails, the original remains active; the selected folder may contain partial files. The selected location is saved in `%LOCALAPPDATA%\KytyPS5Launcher\location.json`.
 
